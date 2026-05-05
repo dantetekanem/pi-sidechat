@@ -203,17 +203,17 @@ export function showAndSpeak(
 	text: string,
 	voiceEnabled: boolean,
 	ensurePanelOpen: () => Promise<boolean>,
-	writeMessage: (text: string) => void,
-	enqueueVoiceWithMessage: (text: string, speed?: number) => void,
+	writeMessage: (text: string, standalone?: boolean) => void,
+	enqueueVoiceWithMessage: (text: string, speed?: number, standalone?: boolean) => void,
 	settings: FridaySettings,
 	logError: (context: string, err: unknown) => void,
 ) {
 	try {
 		if (voiceEnabled) {
-			enqueueVoiceWithMessage(text, settings.voice.speed);
+			enqueueVoiceWithMessage(text, settings.voice.speed, true);
 		} else {
 			ensurePanelOpen().then((ok) => {
-				try { if (ok) writeMessage(text); } catch (e) { logError("showAndSpeak.panel", e); }
+				try { if (ok) writeMessage(text, true); } catch (e) { logError("showAndSpeak.panel", e); }
 			}).catch((e) => logError("showAndSpeak.ensurePanel", e));
 		}
 	} catch (e) { logError("showAndSpeak", e); }

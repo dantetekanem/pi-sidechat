@@ -8,6 +8,8 @@ import { writeFileSync, mkdirSync, appendFileSync, rmSync, existsSync } from "no
 import { join } from "node:path";
 import type { FridaySettings } from "./settings.js";
 
+export type MessageStackMode = "normal" | "standalone";
+
 export async function openPanel(
 	pi: ExtensionAPI,
 	settings: FridaySettings,
@@ -156,6 +158,7 @@ export function writeMessage(
 	settings: FridaySettings,
 	lastMessageTime: { value: number },
 	logError: (context: string, err: unknown) => void,
+	mode: MessageStackMode = "normal",
 ) {
 	try {
 		const now = new Date();
@@ -164,9 +167,10 @@ export function writeMessage(
 			hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit",
 		});
 
-		const FOLLOW_UP_WINDOW_MS = 2000;
-		const isFollowUp = nowMs - lastMessageTime.value < FOLLOW_UP_WINDOW_MS;
-		lastMessageTime.value = nowMs;
+		const FOLLOW_UP_WINDOW_MS = 15_000;
+		const isStandalone = mode === "standalone";
+		const isFollowUp = !isStandalone && nowMs - lastMessageTime.value < FOLLOW_UP_WINDOW_MS;
+		lastMessageTime.value = isStandalone ? 0 : nowMs;
 
 		const dim = "\x1b[2m";
 		const cyan = "\x1b[36m";
@@ -176,9 +180,12 @@ export function writeMessage(
 		const TW_STOP = settings.typewriter.enabled ? "\x02" : "";
 
 		let out = "";
-		if (!isFollowUp) out += "\x1b[2J\x1b[H";
-
-		out += `\n${dim}${cyan}  ${time}${reset}\n\n`;
+		if (isFollowUp) {
+			out += "\n";
+		} else {
+			out += "\x1b[2J\x1b[H";
+			out += `\n${dim}${cyan}  ${time}${reset}\n\n`;
+		}
 
 		const wrapped = wordWrap(text, paneWidth);
 		out += TW_START;

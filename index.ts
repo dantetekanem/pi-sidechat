@@ -119,16 +119,16 @@ export default function (pi: ExtensionAPI) {
 		return result.success;
 	}
 
-	function writeMessageWrapper(text: string) {
-		writeMessage(text, messagesFile, paneWidth, settings, lastMessageTime, logError);
+	function writeMessageWrapper(text: string, standalone = false) {
+		writeMessage(text, messagesFile, paneWidth, settings, lastMessageTime, logError, standalone ? "standalone" : "normal");
 	}
 
 	function writeMessagePassthroughWrapper(text: string) {
 		writeMessagePassthrough(text, messagesFile, paneWidth, logError);
 	}
 
-	function enqueueVoiceWithMessageWrapper(text: string, speed?: number) {
-		enqueueVoiceWithMessage(text, log, logError, speed);
+	function enqueueVoiceWithMessageWrapper(text: string, speed?: number, standalone?: boolean) {
+		enqueueVoiceWithMessage(text, log, logError, speed, standalone);
 		if (!voicePlaying) {
 			processVoiceQueueSynced(
 				ensurePanelOpenWrapper,

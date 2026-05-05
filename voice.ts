@@ -22,7 +22,7 @@ export function getVoiceModelPath(settings: FridaySettings): string {
 export let currentPiper: ChildProcess | null = null;
 export let currentPlayer: ChildProcess | null = null;
 export let voiceForceKilled = false;
-export const voiceQueue: { text: string; speed?: number }[] = [];
+export const voiceQueue: { text: string; speed?: number; standalone?: boolean }[] = [];
 export let voicePlaying = false;
 
 // Resolve function for the active speakText promise — lets killCurrentVoice
@@ -309,14 +309,15 @@ export function enqueueVoiceWithMessage(
 	text: string, 
 	log: (msg: string) => void,
 	logError: (context: string, err: unknown) => void,
-	speed?: number
+	speed?: number,
+	standalone?: boolean,
 ) {
 	try {
 		// Kill anything currently playing — never allow two voices at once
 		if (voicePlaying || currentPlayer || currentPiper) {
 			killCurrentVoice();
 		}
-		voiceQueue.push({ text, speed });
+		voiceQueue.push({ text, speed, standalone });
 		if (!voicePlaying) {
 			// processVoiceQueueSynced will be called by the main module
 		}
@@ -327,7 +328,7 @@ export function enqueueVoiceWithMessage(
 
 export function processVoiceQueueSynced(
 	ensurePanelOpen: () => Promise<boolean>,
-	writeMessage: (text: string) => void,
+	writeMessage: (text: string, standalone?: boolean) => void,
 	settings: FridaySettings,
 	commsDir: string,
 	wakeDaemon: ChildProcess | null,
@@ -356,7 +357,7 @@ export function processVoiceQueueSynced(
 				log, 
 				logError,
 				() => {
-					try { if (ok) writeMessage(item.text); } catch (e) { logError("voiceQueue.writeMessage", e); }
+					try { if (ok) writeMessage(item.text, item.standalone); } catch (e) { logError("voiceQueue.writeMessage", e); }
 				}, 
 				item.speed
 			).finally(() => {
