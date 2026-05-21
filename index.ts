@@ -6,7 +6,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { Text } from "@earendil-works/pi-tui";
-import { mkdirSync, writeFileSync, appendFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -19,8 +19,8 @@ import {
 	voiceQueue, voicePlaying 
 } from "./voice.js";
 import { 
-	openPanel, killPane, isPaneAlive, ensurePanelOpen, cleanupFiles, 
-	writeMessage, writeMessagePassthrough 
+	openPanel, killPane, isPaneAlive, ensurePanelOpen, cleanupFiles,
+	syncTodoPane, writeMessage, writeMessagePassthrough
 } from "./panel.js";
 import { 
 	killOrphanDaemons, startWakeDaemon, stopWakeDaemon, startWakeWatcher, 
@@ -30,10 +30,41 @@ import { scheduleAck, cancelAck, showAndSpeak, loadVoiceAcks } from "./acks.js";
 import { buildSystemPrompt } from "./prompt.js";
 import { registerFridayTodo } from "./todo.js";
 
+export function shouldStartFridayForPiInvocation(args = process.argv.slice(2), stdinIsTTY = process.stdin.isTTY): boolean {
+	if (stdinIsTTY === false) return false;
+
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i];
+		const next = args[i + 1];
+
+		if (arg === "--" || arg === undefined) break;
+		if (arg === "--print" || arg === "-p") return false;
+		if (arg === "--help" || arg === "-h") return false;
+		if (arg === "--version" || arg === "-v") return false;
+		if (arg === "--list-models" || arg.startsWith("--list-models=")) return false;
+		if (arg === "--export" || arg.startsWith("--export=")) return false;
+		if (arg === "--mode") {
+			if (next === "json" || next === "rpc") return false;
+			if (next !== undefined) i++;
+			continue;
+		}
+		if (arg.startsWith("--mode=")) {
+			const mode = arg.slice("--mode=".length);
+			if (mode === "json" || mode === "rpc") return false;
+		}
+	}
+
+	return true;
+}
+
 export default function (pi: ExtensionAPI) {
 
 	// Spawned agents must not use Friday — no communicate tool, no panel, no voice, no acks
 	if (process.env.PI_AGENT_NAME || process.env.PI_TEAM_ROLE) return;
+
+	// Friday is an interactive tmux extension. Do not start it for print, JSON, RPC, help,
+	// model listing, export, piped stdin, or any other CLI path that skips Pi's TUI.
+	if (!shouldStartFridayForPiInvocation()) return;
 
 	// Friday requires tmux — the panel, voice, and daemon all depend on it
 	if (!process.env.TMUX) return;
@@ -116,11 +147,18 @@ export default function (pi: ExtensionAPI) {
 					continue;
 				}
 				const isFridayPane = command.includes("/pi-friday-") && (command.includes("/display.pl") || command.includes("/todos.pl"));
+				if (!isFridayPane) continue;
+
 				const isCurrentPane = command.includes(commsDir);
-				if (isFridayPane && !isCurrentPane) {
+				const isEmptyCurrentTodoPane = isCurrentPane && command.includes("/todos.pl") && (() => {
+					try { return !existsSync(todosFile) || readFileSync(todosFile, "utf-8").trim().length === 0; }
+					catch { return true; }
+				})();
+
+				if (!isCurrentPane || isEmptyCurrentTodoPane) {
 					try {
 						execFileSync("tmux", ["kill-pane", "-t", paneIdToCheck], { stdio: "ignore" });
-						log(`Cleaned stale Friday pane ${paneIdToCheck}`);
+						log(`Cleaned ${isEmptyCurrentTodoPane ? "empty" : "stale"} Friday pane ${paneIdToCheck}`);
 					} catch (err) {
 						logError("cleanupOldFridayPanes.kill", err);
 					}
@@ -165,7 +203,25 @@ export default function (pi: ExtensionAPI) {
 		writeMessagePassthrough(text, messagesFile, paneWidth, logError);
 	}
 
-	registerFridayTodo(pi, { todosFile, logError });
+	function syncTodoPaneWrapper(hasTodos: boolean) {
+		void (async () => {
+			try {
+				if (!enabled) return;
+				if (hasTodos && (!paneId || !(await isPaneAlive(pi, paneId, log)))) {
+					const result = await openPanel(pi, settings, commsDir, messagesFile, todosFile, ownerPaneId, logError, log);
+					if (result.success) {
+						paneId = result.paneId;
+						todoPaneId = result.todoPaneId;
+						paneWidth = result.paneWidth;
+					}
+					return;
+				}
+				todoPaneId = await syncTodoPane(pi, commsDir, todosFile, paneId, todoPaneId, logError);
+			} catch (e) { logError("syncTodoPaneWrapper", e); }
+		})();
+	}
+
+	registerFridayTodo(pi, { todosFile, logError, onTodoVisibilityChange: syncTodoPaneWrapper });
 
 	function enqueueVoiceWithMessageWrapper(text: string, speed?: number, standalone?: boolean) {
 		enqueueVoiceWithMessage(text, log, logError, speed, standalone);

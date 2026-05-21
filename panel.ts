@@ -10,7 +10,19 @@ import type { FridaySettings } from "./settings.js";
 
 export type MessageStackMode = "normal" | "standalone";
 
-type PanelOpenResult = { success: boolean; paneId: string | null; todoPaneId: string | null; paneWidth: number };
+export type PanelOpenResult = { success: boolean; paneId: string | null; todoPaneId: string | null; paneWidth: number };
+
+type ManagedPane = { id: string; role: string; owner: string; parent: string };
+
+const openPanelLocks = new Map<string, Promise<PanelOpenResult>>();
+
+function hasTodoContent(todosFile: string): boolean {
+	try {
+		return existsSync(todosFile) && readFileSync(todosFile, "utf-8").trim().length > 0;
+	} catch {
+		return false;
+	}
+}
 
 function getTodoPaneHeight(todosFile: string): number {
 	try {
@@ -24,15 +36,91 @@ function getTodoPaneHeight(todosFile: string): number {
 	}
 }
 
+async function listManagedPanes(
+	pi: ExtensionAPI,
+	targetPaneId: string | null,
+	logError: (context: string, err: unknown) => void,
+): Promise<ManagedPane[]> {
+	if (!targetPaneId || !process.env.TMUX) return [];
+	try {
+		const result = await pi.exec("tmux", [
+			"list-panes", "-t", targetPaneId, "-F",
+			"#{pane_id}\t#{@friday_role}\t#{@friday_owner}\t#{@friday_parent}",
+		]);
+		if (result.code !== 0) return [];
+		return result.stdout
+			.trim()
+			.split("\n")
+			.filter((line) => line.trim().length > 0)
+			.map((line) => {
+				const [id = "", role = "", owner = "", parent = ""] = line.split("\t");
+				return { id, role, owner, parent };
+			})
+			.filter((pane) => pane.id.length > 0);
+	} catch (e) {
+		logError("listManagedPanes", e);
+		return [];
+	}
+}
+
+async function killManagedPanes(
+	pi: ExtensionAPI,
+	panes: ManagedPane[],
+	keepPaneIds: Set<string>,
+	logError: (context: string, err: unknown) => void,
+	log?: (message: string) => void,
+) {
+	for (const pane of panes) {
+		if (!pane.id || keepPaneIds.has(pane.id)) continue;
+		try {
+			await killPane(pi, pane.id);
+			log?.(`Killed duplicate Friday ${pane.role || "panel"} pane ${pane.id}`);
+		} catch (e) {
+			logError("killManagedPanes", e);
+		}
+	}
+}
+
+async function cleanupManagedPanelStack(
+	pi: ExtensionAPI,
+	ownerPaneId: string | null,
+	keepPaneIds: Set<string>,
+	logError: (context: string, err: unknown) => void,
+	log?: (message: string) => void,
+) {
+	if (!ownerPaneId) return;
+	const panes = await listManagedPanes(pi, ownerPaneId, logError);
+	const ownedComms = panes.filter((pane) => pane.role === "comms" && pane.owner === ownerPaneId);
+	const ownedCommsIds = new Set(ownedComms.map((pane) => pane.id));
+	const ownedTodos = panes.filter((pane) => pane.role === "todo" && ownedCommsIds.has(pane.parent));
+	await killManagedPanes(pi, [...ownedTodos, ...ownedComms], keepPaneIds, logError, log);
+}
+
+async function cleanupTodoPanesForParent(
+	pi: ExtensionAPI,
+	parentPaneId: string,
+	keepTodoPaneId: string | null,
+	logError: (context: string, err: unknown) => void,
+	log?: (message: string) => void,
+) {
+	const panes = await listManagedPanes(pi, parentPaneId, logError);
+	const keepPaneIds = new Set<string>();
+	if (keepTodoPaneId) keepPaneIds.add(keepTodoPaneId);
+	const todos = panes.filter((pane) => pane.role === "todo" && pane.parent === parentPaneId);
+	await killManagedPanes(pi, todos, keepPaneIds, logError, log);
+}
+
 async function openTodoPane(
 	pi: ExtensionAPI,
 	commsDir: string,
 	todosFile: string,
 	parentPaneId: string,
 	logError: (context: string, err: unknown) => void,
+	log?: (message: string) => void,
 ): Promise<string | null> {
 	try {
-		if (!existsSync(todosFile)) writeFileSync(todosFile, "");
+		if (!hasTodoContent(todosFile)) return null;
+		await cleanupTodoPanesForParent(pi, parentPaneId, null, logError, log);
 		const todoScript = join(commsDir, "todos.pl");
 		writeFileSync(todoScript, buildTodoDisplayScript(), { mode: 0o755 });
 
@@ -66,7 +154,27 @@ export async function openPanel(
 	todosFile: string,
 	ownerPaneId: string | null,
 	logError: (context: string, err: unknown) => void,
-	_log?: (message: string) => void,
+	log?: (message: string) => void,
+): Promise<PanelOpenResult> {
+	const lockKey = ownerPaneId ?? "global";
+	const existing = openPanelLocks.get(lockKey);
+	if (existing) return existing;
+
+	const opening = openPanelUnlocked(pi, settings, commsDir, messagesFile, todosFile, ownerPaneId, logError, log)
+		.finally(() => openPanelLocks.delete(lockKey));
+	openPanelLocks.set(lockKey, opening);
+	return opening;
+}
+
+async function openPanelUnlocked(
+	pi: ExtensionAPI,
+	settings: FridaySettings,
+	commsDir: string,
+	messagesFile: string,
+	todosFile: string,
+	ownerPaneId: string | null,
+	logError: (context: string, err: unknown) => void,
+	log?: (message: string) => void,
 ): Promise<PanelOpenResult> {
 	try {
 		if (!process.env.TMUX) return { success: false, paneId: null, todoPaneId: null, paneWidth: 38 };
@@ -74,6 +182,7 @@ export async function openPanel(
 		mkdirSync(commsDir, { recursive: true });
 		writeFileSync(messagesFile, "");
 		if (!existsSync(todosFile)) writeFileSync(todosFile, "");
+		await cleanupManagedPanelStack(pi, ownerPaneId, new Set(), logError, log);
 
 		const displayScript = join(commsDir, "display.pl");
 		writeFileSync(displayScript, buildDisplayScript(), { mode: 0o755 });
@@ -134,7 +243,7 @@ export async function openPanel(
 			if (ownerPaneId) await pi.exec("tmux", ["set-option", "-p", "-t", paneId, "@friday_owner", ownerPaneId]);
 		} catch { /* non-critical */ }
 
-		const todoPaneId = await openTodoPane(pi, commsDir, todosFile, paneId, logError);
+		const todoPaneId = await openTodoPane(pi, commsDir, todosFile, paneId, logError, log);
 
 		let paneWidth: number;
 		try {
@@ -156,6 +265,36 @@ export async function openPanel(
 export async function killPane(pi: ExtensionAPI, paneId: string | null) {
 	if (paneId) {
 		try { await pi.exec("tmux", ["kill-pane", "-t", paneId]); } catch {}
+	}
+}
+
+export async function syncTodoPane(
+	pi: ExtensionAPI,
+	commsDir: string,
+	todosFile: string,
+	parentPaneId: string | null,
+	todoPaneId: string | null,
+	logError: (context: string, err: unknown) => void,
+): Promise<string | null> {
+	try {
+		if (!parentPaneId || !(await isPaneAlive(pi, parentPaneId))) {
+			if (todoPaneId && (await isPaneAlive(pi, todoPaneId))) await killPane(pi, todoPaneId);
+			return null;
+		}
+
+		if (!hasTodoContent(todosFile)) {
+			await cleanupTodoPanesForParent(pi, parentPaneId, null, logError);
+			return null;
+		}
+
+		if (todoPaneId && (await isPaneAlive(pi, todoPaneId))) {
+			await cleanupTodoPanesForParent(pi, parentPaneId, todoPaneId, logError);
+			return todoPaneId;
+		}
+		return await openTodoPane(pi, commsDir, todosFile, parentPaneId, logError);
+	} catch (e) {
+		logError("syncTodoPane", e);
+		return null;
 	}
 }
 
@@ -184,10 +323,10 @@ export async function ensurePanelOpen(
 ): Promise<PanelOpenResult> {
 	try {
 		if (paneId && (await isPaneAlive(pi, paneId))) {
-			let nextTodoPaneId = todoPaneId;
-			if (!(await isPaneAlive(pi, nextTodoPaneId))) {
-				nextTodoPaneId = await openTodoPane(pi, commsDir, todosFile, paneId, logError);
-			}
+			const keepPaneIds = new Set<string>([paneId]);
+			if (todoPaneId) keepPaneIds.add(todoPaneId);
+			await cleanupManagedPanelStack(pi, ownerPaneId, keepPaneIds, logError, _log);
+			const nextTodoPaneId = await syncTodoPane(pi, commsDir, todosFile, paneId, todoPaneId, logError);
 
 			let paneWidth: number;
 			try {
@@ -200,7 +339,7 @@ export async function ensurePanelOpen(
 			}
 			return { success: true, paneId, todoPaneId: nextTodoPaneId, paneWidth };
 		}
-		const result = await openPanel(pi, settings, commsDir, messagesFile, todosFile, ownerPaneId, logError);
+		const result = await openPanel(pi, settings, commsDir, messagesFile, todosFile, ownerPaneId, logError, _log);
 		if (result.success) await sleep(500);
 		return result;
 	} catch (e) {
@@ -357,6 +496,10 @@ while (1) {
         local $/;
         $content = <$fh> // '';
         close $fh;
+    }
+    if ($content =~ /^\s*$/s) {
+        redraw('') if $last ne '';
+        exit 0;
     }
     if ($content ne $last) {
         $last = $content;

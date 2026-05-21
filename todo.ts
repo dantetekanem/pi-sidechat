@@ -31,6 +31,7 @@ type TodoCreateManyItem = {
 type RegisterFridayTodoOptions = {
 	todosFile: string;
 	logError: (context: string, err: unknown) => void;
+	onTodoVisibilityChange?: (hasTodos: boolean) => void;
 };
 
 const FRIDAY_RESET = "\x1b[0m";
@@ -128,47 +129,6 @@ function normalizeStatus(value: unknown): TaskStatus | undefined {
 	return ["pending", "in_progress", "completed", "deleted"].includes(value as string) ? value as TaskStatus : undefined;
 }
 
-function isExplicitTodoPrompt(prompt: string): boolean {
-	return /\b(todo|to-do|task list|plan|checklist|demo|demonstrate|lifecycle)\b/i.test(prompt);
-}
-
-function promptAllowsTodo(prompt: string, recentContext: string): boolean {
-	const text = prompt.trim().toLowerCase();
-	if (!text) return true;
-	if (isExplicitTodoPrompt(text)) return true;
-	const substantial = /\b(fix|fixes|implement|build|change|update|refactor|create|add|remove|install|clone|deep|complex|multi[- ]step|debug|audit|review|analy[sz]e|investigate|diagnose)\b/.test(text);
-	if (substantial || text.length > 80) return true;
-	const contextIsTodoFocused = /\b(friday todo|todo list|todo lifecycle|to-do|task list|checklist)\b/i.test(recentContext);
-	const shortFollowUp = text.length <= 80 && !text.includes("?");
-	if (contextIsTodoFocused && shortFollowUp) return true;
-	if (text.includes("?")) return false;
-	if (/^(run|check|tell|list|count|why|what|where|when|how|is|are|can|do)\b/.test(text)) return false;
-	return false;
-}
-
-function textFromMessage(message: any): string {
-	const content = message?.content;
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.map((block) => typeof block?.text === "string" ? block.text : "")
-		.filter(Boolean)
-		.join("\n");
-}
-
-function recentConversationText(ctx: any): string {
-	try {
-		const branch = ctx?.sessionManager?.getBranch?.() ?? [];
-		return branch
-			.slice(-12)
-			.map((entry: any) => entry?.type === "message" ? textFromMessage(entry.message) : "")
-			.filter(Boolean)
-			.join("\n");
-	} catch {
-		return "";
-	}
-}
-
 function validateSubject(subject: string): string {
 	const trimmed = subject.trim().replace(/\s+/g, " ");
 	if (!trimmed) throw new Error("todo task requires a non-empty subject");
@@ -182,9 +142,6 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 	let state: FridayTodoState = { tasks: [], nextId: 1 };
 	let lastNextId: number | undefined;
 	let agentRunning = false;
-	let lastPrompt = "";
-	let lastPromptContext = "";
-	let lastPromptAllowsTodo = true;
 
 	function setState(next: FridayTodoState) {
 		state = {
@@ -268,6 +225,26 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 		return true;
 	}
 
+	function renderStateSummary(action: TodoAction, summary: string): string {
+		const tasks = nonDeletedTasks();
+		if (tasks.length === 0) return summary;
+		const taskCounts = counts(tasks);
+		const active = activeTasks()[0];
+		const lines = [summary, `Todo state: ${taskCounts.completed}/${taskCounts.total} complete.`];
+		if (active) {
+			lines.push(`Active now: #${active.id} ${active.subject}.`);
+			lines.push(`Tracking rule: mark #${active.id} completed immediately when the work is actually done; do not batch completions at the end.`);
+		} else if (tasks.every((task) => task.status === "completed")) {
+			lines.push("All tasks complete. This completed list will remain visible until the next user turn starts.");
+		} else {
+			lines.push("No active task. Mark exactly one pending task in_progress before doing more work.");
+		}
+		if (action === "create_many") {
+			lines.push("Track the user's directions as tasks. Update status as each direction is fulfilled, not after the whole response.");
+		}
+		return lines.join("\n");
+	}
+
 	function renderTodoLines(): string[] {
 		const tasks = visibleTasks();
 		if (tasks.length === 0) return [];
@@ -297,7 +274,9 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 		try {
 			clearCompletedPlanIfDone(forceClearCompleted);
 			mkdirSync(dirname(options.todosFile), { recursive: true });
-			writeFileSync(options.todosFile, renderTodoLines().join("\n"), "utf-8");
+			const content = renderTodoLines().join("\n");
+			writeFileSync(options.todosFile, content, "utf-8");
+			options.onTodoVisibilityChange?.(content.trim().length > 0);
 		} catch (err) {
 			options.logError("todo.writeTodosFile", err);
 		}
@@ -389,10 +368,11 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 		description: "Manage Friday's built-in todo list shown in the Friday tmux todo pane.",
 		promptSnippet: "Manage Friday's built-in todo list shown in the Friday tmux todo pane",
 		promptGuidelines: [
-			"Use todo only for substantial multi-step execution where a visible plan changes how work is done. Do not use todo for simple questions, single-command checks, read-only investigation, or reporting.",
-			"Start a real plan with one todo create_many call containing 3-8 concrete tasks and exactly one in_progress task. Do not start with a single vague create task.",
-			"Do not replace an open todo list. Continue the active list by completing or updating the current task. Only use create_many with replace=true when the user explicitly changes the plan.",
-			"Keep exactly one task in_progress. Complete the active task before moving to the next one. Completed-only lists are cleared automatically at the end of the agent turn.",
+			"Use todo for substantial multi-step execution, when the user gives numbered directions, or when the user gives several requirements that must be tracked. Skip it for simple questions, single-command checks, read-only investigation, or reporting.",
+			"Start a real plan with one todo create_many call containing 3-8 concrete tasks and exactly one in_progress task. Turn the user's directions into tracked tasks; do not keep requirements only in prose.",
+			"Mark the current task completed immediately when that task is actually done. Never save completions for the end of the turn; delayed batch completion is a tracking failure.",
+			"Before starting the next task, make sure exactly one task is in_progress. Complete or update the active task before moving on; do not replace an open list unless the user explicitly changes the plan.",
+			"Completed-only lists remain visible through the end of the turn so the user can see the final ticks; they are cleared when the next turn starts.",
 		],
 		parameters: Type.Object({
 			action: Type.String({ description: "One of: create, create_many, update, delete, get, list, clear, finish, complete. Complete/finish complete one task; clear is the only explicit list-wiping action." }),
@@ -426,7 +406,6 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 				state.tasks.push(affected);
 				enforceSingleActiveTask();
 			} else if (action === "create_many") {
-				if (!lastPromptAllowsTodo) throw new Error("todo.create_many rejected: this turn does not look like substantial multi-step execution or a todo-focused follow-up");
 				if (hasOpenWork() && params.replace !== true) throw new Error("todo.create_many rejected: an open todo list already exists; complete/update it or pass replace=true only for an explicit plan change");
 				const items: TodoCreateManyItem[] = Array.isArray(params.items)
 					? params.items
@@ -453,6 +432,9 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 				if (nextStatus === "in_progress") {
 					const otherActive = activeTasks().find((task) => task.id !== id);
 					if (otherActive) throw new Error(`todo #${otherActive.id} is already in_progress; complete it before starting #${id}`);
+				}
+				if (nextStatus === "completed" && affected.status !== "in_progress") {
+					throw new Error(`todo #${id} must be in_progress before it can be completed; mark work active before ticking it off`);
 				}
 				if (typeof params.subject === "string") affected.subject = validateSubject(params.subject);
 				if (typeof params.description === "string") affected.description = params.description;
@@ -500,6 +482,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 					affected = active[0];
 				}
 				if (!affected) throw new Error("todo.complete target not found");
+				if (affected.status !== "in_progress") throw new Error(`todo #${affected.id} must be in_progress before it can be completed; mark work active before ticking it off`);
 				const wasActive = affected.status === "in_progress";
 				affected.status = "completed";
 				affected.activeForm = undefined;
@@ -517,7 +500,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 					? summarize("complete" as TodoAction, affected)
 					: summarize(action, affected);
 			return {
-				content: [{ type: "text" as const, text: summary }],
+				content: [{ type: "text" as const, text: renderStateSummary(action, summary) }],
 				details: { action, params, tasks: snap.tasks, fridayTodoState: snap },
 			};
 		},
@@ -547,10 +530,9 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 	pi.on("session_start", async (_event, ctx) => replayFromBranch(ctx));
 	pi.on("session_tree", async (_event, ctx) => replayFromBranch(ctx));
 	pi.on("session_compact", async (_event, ctx) => replayFromBranch(ctx));
-	pi.on("before_agent_start", async (event, ctx) => {
-		lastPrompt = String(event.prompt ?? "");
-		lastPromptContext = recentConversationText(ctx);
-		lastPromptAllowsTodo = promptAllowsTodo(lastPrompt, lastPromptContext);
+	pi.on("before_agent_start", async (_event, _ctx) => {
+		clearCompletedPlanIfDone(true);
+		writeTodosFile();
 		const reminder = buildReminder();
 		if (!reminder) return;
 		return {
@@ -567,7 +549,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 	});
 	pi.on("agent_end", async () => {
 		agentRunning = false;
-		writeTodosFile(true);
+		writeTodosFile();
 	});
 	pi.on("session_shutdown", async () => writeTodosFile(true));
 }
