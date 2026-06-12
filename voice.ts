@@ -144,11 +144,17 @@ export function estimateQuestionTiming(question: string): { waitSec: number; max
 
 let voiceMessageCount = 0;
 
+const FRIDAY_STYLE_TAG_PATTERN = /<\/?(b|bold|i|italic|dim|red|green|yellow|blue|magenta|cyan|gray|white|accent)>/gi;
+
+function stripFridayStyleTags(text: string): string {
+	return text.replace(FRIDAY_STYLE_TAG_PATTERN, "");
+}
+
 export function deriveVoiceText(message: string, voiceSummary?: string): string {
 	voiceMessageCount++;
-	if (voiceSummary) return voiceSummary;
+	if (voiceSummary) return stripFridayStyleTags(voiceSummary);
 
-	const plain = message.replace(/[\n\r]+/g, " ").trim();
+	const plain = stripFridayStyleTags(message).replace(/[\n\r]+/g, " ").trim();
 	if (plain.length <= 200) return plain;
 
 	const sentences = plain.match(/[^.!?]+[.!?]+/g) ?? [plain];

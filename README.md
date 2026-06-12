@@ -50,6 +50,7 @@ Without these, the wake word listener (`/friday listen`, `Alt+L`) is unavailable
 
 | Shortcut | Action |
 |----------|--------|
+| `Alt+Tab` | Show/hide the Friday panel without restarting it; while hidden, assistant replies stay in the main window and are copied to the hidden panel |
 | `Alt+M` | Toggle voice on/off |
 | `Alt+L` | Toggle wake word listener on/off |
 
@@ -63,6 +64,39 @@ Without these, the wake word listener (`/friday listen`, `Alt+L`) is unavailable
 | `/friday settings` | Show current configuration |
 
 The status bar shows active modes: `FRIDAY`, `VOICE`, `DAEMON ON`.
+
+## Programmatic Control
+
+Friday registers a `friday_control` tool so agents can inspect or toggle the panel at runtime:
+
+| Tool action | Effect |
+|-------------|--------|
+| `status` | Report whether Friday is active, suspended, or offline |
+| `disable` | Close Friday panes, stop voice/wake services, and leave Friday inactive |
+| `enable` | Re-enable Friday and reopen the panel when possible |
+
+Other extensions can toggle Friday through the shared event bus:
+
+```ts
+pi.events.emit("friday:disable", { source: "my-extension" });
+pi.events.emit("friday:enable", { source: "my-extension" });
+pi.events.emit("friday:set-enabled", { enabled: false, source: "my-extension" });
+```
+
+Remote-control suspension still takes priority. If Friday is enabled while remote control is active, it will become active after remote control releases it.
+
+## Friday Message Formatting
+
+Friday keeps code, tables, diffs, command output, and other structured artifacts in the main Pi window. The side panel supports only a small set of optional inline tags for conversational emphasis:
+
+| Tag | Effect |
+|-----|--------|
+| `<b>...</b>` or `<bold>...</bold>` | Bold |
+| `<i>...</i>` or `<italic>...</italic>` | Italic |
+| `<dim>...</dim>` | Dim |
+| `<red>...</red>`, `<green>...</green>`, `<yellow>...</yellow>`, `<blue>...</blue>`, `<magenta>...</magenta>`, `<cyan>...</cyan>`, `<gray>...</gray>`, `<white>...</white>`, `<accent>...</accent>` | Color |
+
+Use these tags sparingly in conversational panel messages only. Do not use them for code or main-window content.
 
 ## Wake Word
 

@@ -1,6 +1,6 @@
 {
   "name": "pi-friday",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Dedicated communications side panel for pi \u2014 routes all conversation to a separate tmux pane with typewriter effect. Optional TTS and wake word detection. User data stored in ~/.pi/agent/friday/.",
   "keywords": [
     "pi-package"

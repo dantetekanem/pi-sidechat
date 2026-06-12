@@ -32,6 +32,7 @@ type RegisterFridayTodoOptions = {
 	todosFile: string;
 	logError: (context: string, err: unknown) => void;
 	onTodoVisibilityChange?: (hasTodos: boolean) => void;
+	isEnabled?: () => boolean;
 };
 
 const FRIDAY_RESET = "\x1b[0m";
@@ -140,6 +141,11 @@ function validateSubject(subject: string): string {
 
 export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodoOptions) {
 	let state: FridayTodoState = { tasks: [], nextId: 1 };
+
+	function isEnabled(): boolean {
+		try { return options.isEnabled?.() ?? true; } catch { return true; }
+	}
+
 	let lastNextId: number | undefined;
 	let agentRunning = false;
 
@@ -272,6 +278,12 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 
 	function writeTodosFile(forceClearCompleted = false) {
 		try {
+			if (!isEnabled()) {
+				mkdirSync(dirname(options.todosFile), { recursive: true });
+				writeFileSync(options.todosFile, "", "utf-8");
+				options.onTodoVisibilityChange?.(false);
+				return;
+			}
 			clearCompletedPlanIfDone(forceClearCompleted);
 			mkdirSync(dirname(options.todosFile), { recursive: true });
 			const content = renderTodoLines().join("\n");
@@ -395,6 +407,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 			replace: Type.Optional(Type.Boolean({ description: "Explicitly replace an open todo list. Use only when the user changed the plan." })),
 		}),
 		async execute(_toolCallId, params: any) {
+			if (!isEnabled()) throw new Error("Friday todo is disabled while Friday is inactive");
 			const action = String(params.action ?? "").trim() as TodoAction;
 			let affected: FridayTask | undefined;
 			let affectedMany: FridayTask[] = [];
@@ -521,6 +534,10 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 	pi.registerCommand("todos", {
 		description: "Show Friday's built-in todo list",
 		handler: async (_args, ctx) => {
+			if (!isEnabled()) {
+				ctx.ui.notify("Friday todo is disabled while Friday is inactive", "info");
+				return;
+			}
 			writeTodosFile();
 			const lines = renderTodoLines().map(stripAnsi);
 			ctx.ui.notify(lines.length > 0 ? lines.join("\n") : "No todos", "info");
@@ -531,6 +548,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 	pi.on("session_tree", async (_event, ctx) => replayFromBranch(ctx));
 	pi.on("session_compact", async (_event, ctx) => replayFromBranch(ctx));
 	pi.on("before_agent_start", async (_event, _ctx) => {
+		if (!isEnabled()) return;
 		clearCompletedPlanIfDone(true);
 		writeTodosFile();
 		const reminder = buildReminder();
@@ -545,11 +563,11 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 	});
 	pi.on("agent_start", async () => {
 		agentRunning = true;
-		writeTodosFile();
+		if (isEnabled()) writeTodosFile();
 	});
 	pi.on("agent_end", async () => {
 		agentRunning = false;
-		writeTodosFile();
+		if (isEnabled()) writeTodosFile();
 	});
 	pi.on("session_shutdown", async () => writeTodosFile(true));
 }

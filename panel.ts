@@ -10,9 +10,12 @@ import type { FridaySettings } from "./settings.js";
 
 export type MessageStackMode = "normal" | "standalone";
 
-export type PanelOpenResult = { success: boolean; paneId: string | null; todoPaneId: string | null; paneWidth: number };
+export type PanelOpenResult = { success: boolean; paneId: string | null; emotePaneId: string | null; todoPaneId: string | null; paneWidth: number };
 
 type ManagedPane = { id: string; role: string; owner: string; parent: string };
+
+const FRIDAY_EMOTE_PANE_HEIGHT = 12;
+const FRIDAY_EMPTY_EMOTE_PANE_HEIGHT = 1;
 
 const openPanelLocks = new Map<string, Promise<PanelOpenResult>>();
 
@@ -33,6 +36,17 @@ function getTodoPaneHeight(todosFile: string): number {
 		return Math.max(1, Math.min(14, lineCount + 2));
 	} catch {
 		return 1;
+	}
+}
+
+function getEmotePaneHeight(emoteFile: string): number {
+	try {
+		if (!existsSync(emoteFile)) return FRIDAY_EMPTY_EMOTE_PANE_HEIGHT;
+		const content = readFileSync(emoteFile, "utf-8");
+		if (!content.trim()) return FRIDAY_EMPTY_EMOTE_PANE_HEIGHT;
+		return FRIDAY_EMOTE_PANE_HEIGHT;
+	} catch {
+		return FRIDAY_EMPTY_EMOTE_PANE_HEIGHT;
 	}
 }
 
@@ -92,8 +106,23 @@ async function cleanupManagedPanelStack(
 	const panes = await listManagedPanes(pi, ownerPaneId, logError);
 	const ownedComms = panes.filter((pane) => pane.role === "comms" && pane.owner === ownerPaneId);
 	const ownedCommsIds = new Set(ownedComms.map((pane) => pane.id));
-	const ownedTodos = panes.filter((pane) => pane.role === "todo" && ownedCommsIds.has(pane.parent));
-	await killManagedPanes(pi, [...ownedTodos, ...ownedComms], keepPaneIds, logError, log);
+	const ownedChildren = panes.filter((pane) => (pane.role === "todo" || pane.role === "emote") && ownedCommsIds.has(pane.parent));
+	await killManagedPanes(pi, [...ownedChildren, ...ownedComms], keepPaneIds, logError, log);
+}
+
+async function cleanupChildPanesForParent(
+	pi: ExtensionAPI,
+	parentPaneId: string,
+	role: "todo" | "emote",
+	keepPaneId: string | null,
+	logError: (context: string, err: unknown) => void,
+	log?: (message: string) => void,
+) {
+	const panes = await listManagedPanes(pi, parentPaneId, logError);
+	const keepPaneIds = new Set<string>();
+	if (keepPaneId) keepPaneIds.add(keepPaneId);
+	const matches = panes.filter((pane) => pane.role === role && pane.parent === parentPaneId);
+	await killManagedPanes(pi, matches, keepPaneIds, logError, log);
 }
 
 async function cleanupTodoPanesForParent(
@@ -103,11 +132,66 @@ async function cleanupTodoPanesForParent(
 	logError: (context: string, err: unknown) => void,
 	log?: (message: string) => void,
 ) {
-	const panes = await listManagedPanes(pi, parentPaneId, logError);
-	const keepPaneIds = new Set<string>();
-	if (keepTodoPaneId) keepPaneIds.add(keepTodoPaneId);
-	const todos = panes.filter((pane) => pane.role === "todo" && pane.parent === parentPaneId);
-	await killManagedPanes(pi, todos, keepPaneIds, logError, log);
+	await cleanupChildPanesForParent(pi, parentPaneId, "todo", keepTodoPaneId, logError, log);
+}
+
+async function cleanupEmotePanesForParent(
+	pi: ExtensionAPI,
+	parentPaneId: string,
+	keepEmotePaneId: string | null,
+	logError: (context: string, err: unknown) => void,
+	log?: (message: string) => void,
+) {
+	await cleanupChildPanesForParent(pi, parentPaneId, "emote", keepEmotePaneId, logError, log);
+}
+
+async function openEmotePane(
+	pi: ExtensionAPI,
+	commsDir: string,
+	emoteFile: string,
+	parentPaneId: string,
+	logError: (context: string, err: unknown) => void,
+	log?: (message: string) => void,
+): Promise<string | null> {
+	try {
+		await cleanupEmotePanesForParent(pi, parentPaneId, null, logError, log);
+		const emoteScript = join(commsDir, "emote.pl");
+		writeFileSync(emoteScript, buildEmoteDisplayScript(), { mode: 0o755 });
+
+		const result = await pi.exec("tmux", [
+			"split-window", "-v", "-b", "-d", "-t", parentPaneId,
+			"-l", String(getEmotePaneHeight(emoteFile)),
+			"-P", "-F", "#{pane_id}",
+			"perl", emoteScript, emoteFile,
+		]);
+		const emotePaneId = result.stdout.trim();
+		if (!emotePaneId || result.code !== 0) return null;
+
+		try {
+			await pi.exec("tmux", ["set-option", "-p", "-t", emotePaneId, "allow-passthrough", "on"]);
+			await pi.exec("tmux", ["set-option", "-p", "-t", emotePaneId, "@friday_role", "emote"]);
+			await pi.exec("tmux", ["set-option", "-p", "-t", emotePaneId, "@friday_parent", parentPaneId]);
+		} catch { /* non-critical */ }
+
+		return emotePaneId;
+	} catch (e) {
+		logError("openEmotePane", e);
+		return null;
+	}
+}
+
+async function enforceEmotePaneHeight(
+	pi: ExtensionAPI,
+	emoteFile: string,
+	emotePaneId: string | null,
+	logError: (context: string, err: unknown) => void,
+) {
+	try {
+		if (!emotePaneId || !process.env.TMUX) return;
+		await pi.exec("tmux", ["resize-pane", "-t", emotePaneId, "-y", String(getEmotePaneHeight(emoteFile))]);
+	} catch (e) {
+		logError("enforceEmotePaneHeight", e);
+	}
 }
 
 async function openTodoPane(
@@ -146,12 +230,33 @@ async function openTodoPane(
 	}
 }
 
+async function enforceConfiguredPanelWidth(
+	pi: ExtensionAPI,
+	settings: FridaySettings,
+	ownerPaneId: string | null,
+	paneId: string | null,
+	logError: (context: string, err: unknown) => void,
+) {
+	try {
+		if (!paneId || !process.env.TMUX) return;
+		const targetPane = ownerPaneId ?? paneId;
+		const widthResult = await pi.exec("tmux", ["display-message", "-t", targetPane, "-p", "#{window_width}"]);
+		const windowWidth = parseInt(widthResult.stdout.trim(), 10);
+		if (!Number.isFinite(windowWidth) || windowWidth <= 0) return;
+		const targetWidth = Math.max(20, Math.floor(windowWidth * (settings.panelWidth / 100)));
+		await pi.exec("tmux", ["resize-pane", "-t", paneId, "-x", String(targetWidth)]);
+	} catch (e) {
+		logError("enforceConfiguredPanelWidth", e);
+	}
+}
+
 export async function openPanel(
 	pi: ExtensionAPI,
 	settings: FridaySettings,
 	commsDir: string,
 	messagesFile: string,
 	todosFile: string,
+	emoteFile: string,
 	ownerPaneId: string | null,
 	logError: (context: string, err: unknown) => void,
 	log?: (message: string) => void,
@@ -160,7 +265,7 @@ export async function openPanel(
 	const existing = openPanelLocks.get(lockKey);
 	if (existing) return existing;
 
-	const opening = openPanelUnlocked(pi, settings, commsDir, messagesFile, todosFile, ownerPaneId, logError, log)
+	const opening = openPanelUnlocked(pi, settings, commsDir, messagesFile, todosFile, emoteFile, ownerPaneId, logError, log)
 		.finally(() => openPanelLocks.delete(lockKey));
 	openPanelLocks.set(lockKey, opening);
 	return opening;
@@ -172,12 +277,13 @@ async function openPanelUnlocked(
 	commsDir: string,
 	messagesFile: string,
 	todosFile: string,
+	emoteFile: string,
 	ownerPaneId: string | null,
 	logError: (context: string, err: unknown) => void,
 	log?: (message: string) => void,
 ): Promise<PanelOpenResult> {
 	try {
-		if (!process.env.TMUX) return { success: false, paneId: null, todoPaneId: null, paneWidth: 38 };
+		if (!process.env.TMUX) return { success: false, paneId: null, emotePaneId: null, todoPaneId: null, paneWidth: 38 };
 
 		mkdirSync(commsDir, { recursive: true });
 		writeFileSync(messagesFile, "");
@@ -232,7 +338,7 @@ async function openPanelUnlocked(
 
 		if (!paneId || result.code !== 0) {
 			cleanupFiles(commsDir);
-			return { success: false, paneId: null, todoPaneId: null, paneWidth: 38 };
+			return { success: false, paneId: null, emotePaneId: null, todoPaneId: null, paneWidth: 38 };
 		}
 
 		try {
@@ -240,10 +346,14 @@ async function openPanelUnlocked(
 				"set-option", "-p", "-t", paneId, "allow-passthrough", "on",
 			]);
 			await pi.exec("tmux", ["set-option", "-p", "-t", paneId, "@friday_role", "comms"]);
-			if (ownerPaneId) await pi.exec("tmux", ["set-option", "-p", "-t", paneId, "@friday_owner", ownerPaneId]);
+			if (ownerPaneId) {
+				await pi.exec("tmux", ["set-option", "-p", "-t", paneId, "@friday_owner", ownerPaneId]);
+			}
 		} catch { /* non-critical */ }
 
 		const todoPaneId = await openTodoPane(pi, commsDir, todosFile, paneId, logError, log);
+		const emotePaneId = null;
+		await enforceConfiguredPanelWidth(pi, settings, ownerPaneId, paneId, logError);
 
 		let paneWidth: number;
 		try {
@@ -255,16 +365,42 @@ async function openPanelUnlocked(
 			paneWidth = 38;
 		}
 
-		return { success: true, paneId, todoPaneId, paneWidth };
+		return { success: true, paneId, emotePaneId, todoPaneId, paneWidth };
 	} catch (e) {
 		logError("openPanel", e);
-		return { success: false, paneId: null, todoPaneId: null, paneWidth: 38 };
+		return { success: false, paneId: null, emotePaneId: null, todoPaneId: null, paneWidth: 38 };
 	}
 }
 
 export async function killPane(pi: ExtensionAPI, paneId: string | null) {
 	if (paneId) {
 		try { await pi.exec("tmux", ["kill-pane", "-t", paneId]); } catch {}
+	}
+}
+
+export async function syncEmotePane(
+	pi: ExtensionAPI,
+	commsDir: string,
+	emoteFile: string,
+	parentPaneId: string | null,
+	emotePaneId: string | null,
+	logError: (context: string, err: unknown) => void,
+): Promise<string | null> {
+	try {
+		if (!parentPaneId || !(await isPaneAlive(pi, parentPaneId))) {
+			if (emotePaneId && (await isPaneAlive(pi, emotePaneId))) await killPane(pi, emotePaneId);
+			return null;
+		}
+
+		if (emotePaneId && (await isPaneAlive(pi, emotePaneId))) {
+			await cleanupEmotePanesForParent(pi, parentPaneId, emotePaneId, logError);
+			await enforceEmotePaneHeight(pi, emoteFile, emotePaneId, logError);
+			return emotePaneId;
+		}
+		return await openEmotePane(pi, commsDir, emoteFile, parentPaneId, logError);
+	} catch (e) {
+		logError("syncEmotePane", e);
+		return null;
 	}
 }
 
@@ -314,8 +450,10 @@ export async function ensurePanelOpen(
 	commsDir: string,
 	messagesFile: string,
 	todosFile: string,
+	emoteFile: string,
 	ownerPaneId: string | null,
 	paneId: string | null,
+	emotePaneId: string | null,
 	todoPaneId: string | null,
 	sleep: (ms: number) => Promise<void>,
 	logError: (context: string, err: unknown) => void,
@@ -327,6 +465,8 @@ export async function ensurePanelOpen(
 			if (todoPaneId) keepPaneIds.add(todoPaneId);
 			await cleanupManagedPanelStack(pi, ownerPaneId, keepPaneIds, logError, _log);
 			const nextTodoPaneId = await syncTodoPane(pi, commsDir, todosFile, paneId, todoPaneId, logError);
+			const nextEmotePaneId = null;
+			await enforceConfiguredPanelWidth(pi, settings, ownerPaneId, paneId, logError);
 
 			let paneWidth: number;
 			try {
@@ -337,14 +477,14 @@ export async function ensurePanelOpen(
 			} catch {
 				paneWidth = 38;
 			}
-			return { success: true, paneId, todoPaneId: nextTodoPaneId, paneWidth };
+			return { success: true, paneId, emotePaneId: nextEmotePaneId, todoPaneId: nextTodoPaneId, paneWidth };
 		}
-		const result = await openPanel(pi, settings, commsDir, messagesFile, todosFile, ownerPaneId, logError, _log);
+		const result = await openPanel(pi, settings, commsDir, messagesFile, todosFile, emoteFile, ownerPaneId, logError, _log);
 		if (result.success) await sleep(500);
 		return result;
 	} catch (e) {
 		logError("ensurePanelOpen", e);
-		return { success: false, paneId: null, todoPaneId: null, paneWidth: 38 };
+		return { success: false, paneId: null, emotePaneId: null, todoPaneId: null, paneWidth: 38 };
 	}
 }
 
@@ -388,9 +528,10 @@ export function writeMessage(
 			out += `\n${dim}${cyan}  ${time}${reset}\n\n`;
 		}
 
-		const wrapped = wordWrap(text, paneWidth);
+		const wrapped = wordWrapStyled(text, paneWidth);
+		const styleStack: string[] = [];
 		out += TW_START;
-		for (const line of wrapped) out += `${white}  ${line}${reset}\n`;
+		for (const line of wrapped) out += `${white}  ${renderFridayStyleTags(line, white, styleStack)}${reset}\n`;
 		out += TW_STOP;
 		out += "\n";
 
@@ -410,16 +551,70 @@ export function writeMessagePassthrough(
 		const reset = "\x1b[0m";
 		const lightGray = "\x1b[38;5;249m"; // 256-color light gray, readable but distinct
 
-		const wrapped = wordWrap(text, paneWidth);
+		const wrapped = wordWrapStyled(text, paneWidth);
+		const styleStack: string[] = [];
 		let out = "\n";
-		for (const line of wrapped) out += `${lightGray}  ${line}${reset}\n`;
+		for (const line of wrapped) out += `${lightGray}  ${renderFridayStyleTags(line, lightGray, styleStack)}${reset}\n`;
 		out += "\n";
 
 		appendFileSync(messagesFile, out);
 	} catch (e) { logError("writeMessagePassthrough", e); }
 }
 
+const FRIDAY_STYLE_TAGS: Record<string, string> = {
+	b: "\x1b[1m",
+	bold: "\x1b[1m",
+	i: "\x1b[3m",
+	italic: "\x1b[3m",
+	dim: "\x1b[2m",
+	red: "\x1b[31m",
+	green: "\x1b[32m",
+	yellow: "\x1b[33m",
+	blue: "\x1b[34m",
+	magenta: "\x1b[35m",
+	cyan: "\x1b[36m",
+	gray: "\x1b[38;5;249m",
+	white: "\x1b[97m",
+	accent: "\x1b[36m",
+};
+const FRIDAY_STYLE_TAG_PATTERN = /<\/?(b|bold|i|italic|dim|red|green|yellow|blue|magenta|cyan|gray|white|accent)>/gi;
+
+export function stripFridayStyleTags(text: string): string {
+	return text.replace(FRIDAY_STYLE_TAG_PATTERN, "");
+}
+
+function activeFridayStyleAnsi(stack: string[]): string {
+	return stack.map((activeTag) => FRIDAY_STYLE_TAGS[activeTag] ?? "").join("");
+}
+
+function visibleTextLength(text: string): number {
+	return stripFridayStyleTags(text).length;
+}
+
+export function renderFridayStyleTags(text: string, baseAnsi: string, stack: string[] = []): string {
+	let rendered = activeFridayStyleAnsi(stack);
+	rendered += text.replace(FRIDAY_STYLE_TAG_PATTERN, (match, rawTag: string) => {
+		const tag = rawTag.toLowerCase();
+		const code = FRIDAY_STYLE_TAGS[tag];
+		if (!code) return match;
+
+		if (!match.startsWith("</")) {
+			stack.push(tag);
+			return code;
+		}
+
+		const lastIndex = stack.lastIndexOf(tag);
+		if (lastIndex >= 0) stack.splice(lastIndex, 1);
+		return `\x1b[0m${baseAnsi}${activeFridayStyleAnsi(stack)}`;
+	});
+	return rendered;
+}
+
 export function wordWrap(text: string, width: number): string[] {
+	return wordWrapStyled(text, width).map(stripFridayStyleTags);
+}
+
+export function wordWrapStyled(text: string, width: number): string[] {
 	const lines: string[] = [];
 	const paragraphs = text.split("\n");
 
@@ -430,7 +625,9 @@ export function wordWrap(text: string, width: number): string[] {
 		let currentLine = "";
 
 		for (const word of words) {
-			if (currentLine.length + word.length + 1 > width && currentLine.length > 0) {
+			const separatorLength = currentLine ? 1 : 0;
+			const nextLength = visibleTextLength(currentLine) + separatorLength + visibleTextLength(word);
+			if (nextLength > width && currentLine.length > 0) {
 				lines.push(currentLine);
 				currentLine = word;
 			} else {
@@ -506,6 +703,63 @@ while (1) {
         redraw($content);
     }
     select(undef, undef, undef, 0.2);
+}
+`;
+}
+
+export function buildEmoteDisplayScript(): string {
+	return `#!/usr/bin/perl
+use strict;
+use warnings;
+
+$| = 1;
+binmode(STDOUT, ':utf8');
+
+my $file = $ARGV[0] or die "Usage: $0 <emote-file>\\n";
+my $last = '__pi_friday_emote_initial__';
+my $fixed_height = ${FRIDAY_EMOTE_PANE_HEIGHT};
+my $empty_height = ${FRIDAY_EMPTY_EMOTE_PANE_HEIGHT};
+
+sub wanted_height {
+    my ($content) = @_;
+    return $empty_height if $content =~ /^\s*$/s;
+    return $fixed_height;
+}
+
+sub resize_self {
+    my ($height) = @_;
+    return unless $ENV{TMUX_PANE};
+    system('tmux', 'resize-pane', '-t', $ENV{TMUX_PANE}, '-y', $height);
+}
+
+sub clear_history {
+    return unless $ENV{TMUX_PANE};
+    system('tmux', 'clear-history', '-t', $ENV{TMUX_PANE});
+}
+
+sub redraw {
+    my ($content) = @_;
+    my $height = wanted_height($content);
+    resize_self($height);
+    clear_history();
+    print "\\x1b[3J\\x1b[2J\\x1b[H";
+    return if $content =~ /^\s*$/s;
+    print $content;
+}
+
+while (1) {
+    my $content = '';
+    if (-f $file && open my $fh, '<', $file) {
+        binmode($fh, ':utf8');
+        local $/;
+        $content = <$fh> // '';
+        close $fh;
+    }
+    if ($content ne $last) {
+        $last = $content;
+        redraw($content);
+    }
+    select(undef, undef, undef, 0.08);
 }
 `;
 }
