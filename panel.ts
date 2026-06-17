@@ -1,12 +1,12 @@
 /**
- * Friday Extension - Panel Management Module
+ * Sidechat Extension - Panel Management Module
  * Tmux panel operations, message writing, and display scripts
  */
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { writeFileSync, mkdirSync, appendFileSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FridaySettings } from "./settings.js";
+import type { SidechatSettings } from "./settings.js";
 
 export type MessageStackMode = "normal" | "standalone";
 
@@ -14,8 +14,8 @@ export type PanelOpenResult = { success: boolean; paneId: string | null; emotePa
 
 type ManagedPane = { id: string; role: string; owner: string; parent: string };
 
-const FRIDAY_EMOTE_PANE_HEIGHT = 12;
-const FRIDAY_EMPTY_EMOTE_PANE_HEIGHT = 1;
+const SIDECHAT_EMOTE_PANE_HEIGHT = 12;
+const SIDECHAT_EMPTY_EMOTE_PANE_HEIGHT = 1;
 
 const openPanelLocks = new Map<string, Promise<PanelOpenResult>>();
 
@@ -41,12 +41,12 @@ function getTodoPaneHeight(todosFile: string): number {
 
 function getEmotePaneHeight(emoteFile: string): number {
 	try {
-		if (!existsSync(emoteFile)) return FRIDAY_EMPTY_EMOTE_PANE_HEIGHT;
+		if (!existsSync(emoteFile)) return SIDECHAT_EMPTY_EMOTE_PANE_HEIGHT;
 		const content = readFileSync(emoteFile, "utf-8");
-		if (!content.trim()) return FRIDAY_EMPTY_EMOTE_PANE_HEIGHT;
-		return FRIDAY_EMOTE_PANE_HEIGHT;
+		if (!content.trim()) return SIDECHAT_EMPTY_EMOTE_PANE_HEIGHT;
+		return SIDECHAT_EMOTE_PANE_HEIGHT;
 	} catch {
-		return FRIDAY_EMPTY_EMOTE_PANE_HEIGHT;
+		return SIDECHAT_EMPTY_EMOTE_PANE_HEIGHT;
 	}
 }
 
@@ -59,7 +59,7 @@ async function listManagedPanes(
 	try {
 		const result = await pi.exec("tmux", [
 			"list-panes", "-t", targetPaneId, "-F",
-			"#{pane_id}\t#{@friday_role}\t#{@friday_owner}\t#{@friday_parent}",
+			"#{pane_id}\t#{@sidechat_role}\t#{@sidechat_owner}\t#{@sidechat_parent}",
 		]);
 		if (result.code !== 0) return [];
 		return result.stdout
@@ -88,7 +88,7 @@ async function killManagedPanes(
 		if (!pane.id || keepPaneIds.has(pane.id)) continue;
 		try {
 			await killPane(pi, pane.id);
-			log?.(`Killed duplicate Friday ${pane.role || "panel"} pane ${pane.id}`);
+			log?.(`Killed duplicate Sidechat ${pane.role || "panel"} pane ${pane.id}`);
 		} catch (e) {
 			logError("killManagedPanes", e);
 		}
@@ -169,8 +169,8 @@ async function openEmotePane(
 
 		try {
 			await pi.exec("tmux", ["set-option", "-p", "-t", emotePaneId, "allow-passthrough", "on"]);
-			await pi.exec("tmux", ["set-option", "-p", "-t", emotePaneId, "@friday_role", "emote"]);
-			await pi.exec("tmux", ["set-option", "-p", "-t", emotePaneId, "@friday_parent", parentPaneId]);
+			await pi.exec("tmux", ["set-option", "-p", "-t", emotePaneId, "@sidechat_role", "emote"]);
+			await pi.exec("tmux", ["set-option", "-p", "-t", emotePaneId, "@sidechat_parent", parentPaneId]);
 		} catch { /* non-critical */ }
 
 		return emotePaneId;
@@ -219,8 +219,8 @@ async function openTodoPane(
 
 		try {
 			await pi.exec("tmux", ["set-option", "-p", "-t", todoPaneId, "allow-passthrough", "on"]);
-			await pi.exec("tmux", ["set-option", "-p", "-t", todoPaneId, "@friday_role", "todo"]);
-			await pi.exec("tmux", ["set-option", "-p", "-t", todoPaneId, "@friday_parent", parentPaneId]);
+			await pi.exec("tmux", ["set-option", "-p", "-t", todoPaneId, "@sidechat_role", "todo"]);
+			await pi.exec("tmux", ["set-option", "-p", "-t", todoPaneId, "@sidechat_parent", parentPaneId]);
 		} catch { /* non-critical */ }
 
 		return todoPaneId;
@@ -232,7 +232,7 @@ async function openTodoPane(
 
 async function enforceConfiguredPanelWidth(
 	pi: ExtensionAPI,
-	settings: FridaySettings,
+	settings: SidechatSettings,
 	ownerPaneId: string | null,
 	paneId: string | null,
 	logError: (context: string, err: unknown) => void,
@@ -252,7 +252,7 @@ async function enforceConfiguredPanelWidth(
 
 export async function openPanel(
 	pi: ExtensionAPI,
-	settings: FridaySettings,
+	settings: SidechatSettings,
 	commsDir: string,
 	messagesFile: string,
 	todosFile: string,
@@ -273,7 +273,7 @@ export async function openPanel(
 
 async function openPanelUnlocked(
 	pi: ExtensionAPI,
-	settings: FridaySettings,
+	settings: SidechatSettings,
 	commsDir: string,
 	messagesFile: string,
 	todosFile: string,
@@ -345,9 +345,9 @@ async function openPanelUnlocked(
 			await pi.exec("tmux", [
 				"set-option", "-p", "-t", paneId, "allow-passthrough", "on",
 			]);
-			await pi.exec("tmux", ["set-option", "-p", "-t", paneId, "@friday_role", "comms"]);
+			await pi.exec("tmux", ["set-option", "-p", "-t", paneId, "@sidechat_role", "comms"]);
 			if (ownerPaneId) {
-				await pi.exec("tmux", ["set-option", "-p", "-t", paneId, "@friday_owner", ownerPaneId]);
+				await pi.exec("tmux", ["set-option", "-p", "-t", paneId, "@sidechat_owner", ownerPaneId]);
 			}
 		} catch { /* non-critical */ }
 
@@ -446,7 +446,7 @@ export async function isPaneAlive(pi: ExtensionAPI, paneId: string | null): Prom
 
 export async function ensurePanelOpen(
 	pi: ExtensionAPI,
-	settings: FridaySettings,
+	settings: SidechatSettings,
 	commsDir: string,
 	messagesFile: string,
 	todosFile: string,
@@ -455,7 +455,6 @@ export async function ensurePanelOpen(
 	paneId: string | null,
 	emotePaneId: string | null,
 	todoPaneId: string | null,
-	sleep: (ms: number) => Promise<void>,
 	logError: (context: string, err: unknown) => void,
 	_log?: (message: string) => void,
 ): Promise<PanelOpenResult> {
@@ -479,9 +478,7 @@ export async function ensurePanelOpen(
 			}
 			return { success: true, paneId, emotePaneId: nextEmotePaneId, todoPaneId: nextTodoPaneId, paneWidth };
 		}
-		const result = await openPanel(pi, settings, commsDir, messagesFile, todosFile, emoteFile, ownerPaneId, logError, _log);
-		if (result.success) await sleep(500);
-		return result;
+		return await openPanel(pi, settings, commsDir, messagesFile, todosFile, emoteFile, ownerPaneId, logError, _log);
 	} catch (e) {
 		logError("ensurePanelOpen", e);
 		return { success: false, paneId: null, emotePaneId: null, todoPaneId: null, paneWidth: 38 };
@@ -496,7 +493,7 @@ export function writeMessage(
 	text: string,
 	messagesFile: string,
 	paneWidth: number,
-	settings: FridaySettings,
+	settings: SidechatSettings,
 	lastMessageTime: { value: number },
 	logError: (context: string, err: unknown) => void,
 	mode: MessageStackMode = "normal",
@@ -531,7 +528,7 @@ export function writeMessage(
 		const wrapped = wordWrapStyled(text, paneWidth);
 		const styleStack: string[] = [];
 		out += TW_START;
-		for (const line of wrapped) out += `${white}  ${renderFridayStyleTags(line, white, styleStack)}${reset}\n`;
+		for (const line of wrapped) out += `${white}  ${renderSidechatStyleTags(line, white, styleStack)}${reset}\n`;
 		out += TW_STOP;
 		out += "\n";
 
@@ -539,8 +536,8 @@ export function writeMessage(
 	} catch (e) { logError("writeMessage", e); }
 }
 
-/** Write a passthrough message (agent text not sent via communicate).
- *  Always appends — never clears the panel. No voice. Dimmer styling. */
+/** Write a passthrough message copied while the Sidechat panel is hidden.
+ *  Always appends — never clears the panel. Dimmer styling. */
 export function writeMessagePassthrough(
 	text: string,
 	messagesFile: string,
@@ -554,14 +551,14 @@ export function writeMessagePassthrough(
 		const wrapped = wordWrapStyled(text, paneWidth);
 		const styleStack: string[] = [];
 		let out = "\n";
-		for (const line of wrapped) out += `${lightGray}  ${renderFridayStyleTags(line, lightGray, styleStack)}${reset}\n`;
+		for (const line of wrapped) out += `${lightGray}  ${renderSidechatStyleTags(line, lightGray, styleStack)}${reset}\n`;
 		out += "\n";
 
 		appendFileSync(messagesFile, out);
 	} catch (e) { logError("writeMessagePassthrough", e); }
 }
 
-const FRIDAY_STYLE_TAGS: Record<string, string> = {
+const SIDECHAT_STYLE_TAGS: Record<string, string> = {
 	b: "\x1b[1m",
 	bold: "\x1b[1m",
 	i: "\x1b[3m",
@@ -577,25 +574,25 @@ const FRIDAY_STYLE_TAGS: Record<string, string> = {
 	white: "\x1b[97m",
 	accent: "\x1b[36m",
 };
-const FRIDAY_STYLE_TAG_PATTERN = /<\/?(b|bold|i|italic|dim|red|green|yellow|blue|magenta|cyan|gray|white|accent)>/gi;
+const SIDECHAT_STYLE_TAG_PATTERN = /<\/?(b|bold|i|italic|dim|red|green|yellow|blue|magenta|cyan|gray|white|accent)>/gi;
 
-export function stripFridayStyleTags(text: string): string {
-	return text.replace(FRIDAY_STYLE_TAG_PATTERN, "");
+export function stripSidechatStyleTags(text: string): string {
+	return text.replace(SIDECHAT_STYLE_TAG_PATTERN, "");
 }
 
-function activeFridayStyleAnsi(stack: string[]): string {
-	return stack.map((activeTag) => FRIDAY_STYLE_TAGS[activeTag] ?? "").join("");
+function activeSidechatStyleAnsi(stack: string[]): string {
+	return stack.map((activeTag) => SIDECHAT_STYLE_TAGS[activeTag] ?? "").join("");
 }
 
 function visibleTextLength(text: string): number {
-	return stripFridayStyleTags(text).length;
+	return stripSidechatStyleTags(text).length;
 }
 
-export function renderFridayStyleTags(text: string, baseAnsi: string, stack: string[] = []): string {
-	let rendered = activeFridayStyleAnsi(stack);
-	rendered += text.replace(FRIDAY_STYLE_TAG_PATTERN, (match, rawTag: string) => {
+export function renderSidechatStyleTags(text: string, baseAnsi: string, stack: string[] = []): string {
+	let rendered = activeSidechatStyleAnsi(stack);
+	rendered += text.replace(SIDECHAT_STYLE_TAG_PATTERN, (match, rawTag: string) => {
 		const tag = rawTag.toLowerCase();
-		const code = FRIDAY_STYLE_TAGS[tag];
+		const code = SIDECHAT_STYLE_TAGS[tag];
 		if (!code) return match;
 
 		if (!match.startsWith("</")) {
@@ -605,13 +602,13 @@ export function renderFridayStyleTags(text: string, baseAnsi: string, stack: str
 
 		const lastIndex = stack.lastIndexOf(tag);
 		if (lastIndex >= 0) stack.splice(lastIndex, 1);
-		return `\x1b[0m${baseAnsi}${activeFridayStyleAnsi(stack)}`;
+		return `\x1b[0m${baseAnsi}${activeSidechatStyleAnsi(stack)}`;
 	});
 	return rendered;
 }
 
 export function wordWrap(text: string, width: number): string[] {
-	return wordWrapStyled(text, width).map(stripFridayStyleTags);
+	return wordWrapStyled(text, width).map(stripSidechatStyleTags);
 }
 
 export function wordWrapStyled(text: string, width: number): string[] {
@@ -716,9 +713,9 @@ $| = 1;
 binmode(STDOUT, ':utf8');
 
 my $file = $ARGV[0] or die "Usage: $0 <emote-file>\\n";
-my $last = '__pi_friday_emote_initial__';
-my $fixed_height = ${FRIDAY_EMOTE_PANE_HEIGHT};
-my $empty_height = ${FRIDAY_EMPTY_EMOTE_PANE_HEIGHT};
+my $last = '__pi_sidechat_emote_initial__';
+my $fixed_height = ${SIDECHAT_EMOTE_PANE_HEIGHT};
+my $empty_height = ${SIDECHAT_EMPTY_EMOTE_PANE_HEIGHT};
 
 sub wanted_height {
     my ($content) = @_;

@@ -1,15 +1,24 @@
 {
-  "name": "pi-friday",
-  "version": "0.2.5",
-  "description": "Dedicated communications side panel for pi \u2014 routes all conversation to a separate tmux pane with typewriter effect. Optional TTS and wake word detection. User data stored in ~/.pi/agent/friday/.",
+  "name": "pi-sidechat",
+  "version": "1.0.0",
+  "description": "Side panel for pi that routes <msg> assistant messages to a tmux side pane while leaving everything else in the main transcript.",
   "keywords": [
     "pi-package"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dantetekanem/friday.git"
+    "url": "https://github.com/dantetekanem/pi-sidechat.git"
   },
+  "files": [
+    "index.ts",
+    "panel.ts",
+    "todo.ts",
+    "settings.ts",
+    "settings.json",
+    "README.md",
+    "CHANGELOG.md"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"

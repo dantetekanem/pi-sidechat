@@ -6,7 +6,7 @@ import { dirname } from "node:path";
 type TaskStatus = "pending" | "in_progress" | "completed" | "deleted";
 type TodoAction = "create" | "create_many" | "update" | "delete" | "get" | "list" | "clear" | "finish" | "complete";
 
-type FridayTask = {
+type SidechatTask = {
 	id: number;
 	subject: string;
 	description?: string;
@@ -15,8 +15,8 @@ type FridayTask = {
 	blockedBy?: number[];
 };
 
-type FridayTodoState = {
-	tasks: FridayTask[];
+type SidechatTodoState = {
+	tasks: SidechatTask[];
 	nextId: number;
 };
 
@@ -28,21 +28,21 @@ type TodoCreateManyItem = {
 	blockedBy?: number[];
 };
 
-type RegisterFridayTodoOptions = {
+type RegisterSidechatTodoOptions = {
 	todosFile: string;
 	logError: (context: string, err: unknown) => void;
 	onTodoVisibilityChange?: (hasTodos: boolean) => void;
 	isEnabled?: () => boolean;
 };
 
-const FRIDAY_RESET = "\x1b[0m";
-const FRIDAY_DIM = "\x1b[38;5;245m";
-const FRIDAY_MUTED = "\x1b[38;5;240m";
-const FRIDAY_ACCENT = "\x1b[38;5;213m";
-const FRIDAY_WARNING = "\x1b[38;5;215m";
-const FRIDAY_SUCCESS = "\x1b[38;5;84m";
-const FRIDAY_TEXT = "\x1b[38;5;255m";
-const FRIDAY_ERROR = "\x1b[38;5;203m";
+const SIDECHAT_RESET = "\x1b[0m";
+const SIDECHAT_DIM = "\x1b[38;5;245m";
+const SIDECHAT_MUTED = "\x1b[38;5;240m";
+const SIDECHAT_ACCENT = "\x1b[38;5;213m";
+const SIDECHAT_WARNING = "\x1b[38;5;215m";
+const SIDECHAT_SUCCESS = "\x1b[38;5;84m";
+const SIDECHAT_TEXT = "\x1b[38;5;255m";
+const SIDECHAT_ERROR = "\x1b[38;5;203m";
 const MIN_PLAN_TASKS = 3;
 const MAX_PLAN_TASKS = 8;
 const MAX_TODO_LINES = 12;
@@ -68,14 +68,14 @@ function truncateAnsi(line: string, width: number): string {
 				continue;
 			}
 		}
-		if (visible >= width - 3) return out + "..." + FRIDAY_RESET;
+		if (visible >= width - 3) return out + "..." + SIDECHAT_RESET;
 		out += line[i];
 		visible++;
 	}
 	return out;
 }
 
-function statusGlyph(task: FridayTask): string {
+function statusGlyph(task: SidechatTask): string {
 	switch (task.status) {
 		case "completed":
 			return "x";
@@ -88,20 +88,20 @@ function statusGlyph(task: FridayTask): string {
 	}
 }
 
-function statusColor(task: FridayTask): string {
+function statusColor(task: SidechatTask): string {
 	switch (task.status) {
 		case "completed":
-			return FRIDAY_SUCCESS;
+			return SIDECHAT_SUCCESS;
 		case "in_progress":
-			return FRIDAY_WARNING;
+			return SIDECHAT_WARNING;
 		case "pending":
-			return FRIDAY_DIM;
+			return SIDECHAT_DIM;
 		case "deleted":
-			return FRIDAY_ERROR;
+			return SIDECHAT_ERROR;
 	}
 }
 
-function summarize(action: TodoAction, task?: FridayTask): string {
+function summarize(action: TodoAction, task?: SidechatTask): string {
 	if (!task) return action;
 	return `${action}: #${task.id} ${task.subject}`;
 }
@@ -139,8 +139,8 @@ function validateSubject(subject: string): string {
 	return trimmed;
 }
 
-export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodoOptions) {
-	let state: FridayTodoState = { tasks: [], nextId: 1 };
+export function registerSidechatTodo(pi: ExtensionAPI, options: RegisterSidechatTodoOptions) {
+	let state: SidechatTodoState = { tasks: [], nextId: 1 };
 
 	function isEnabled(): boolean {
 		try { return options.isEnabled?.() ?? true; } catch { return true; }
@@ -149,7 +149,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 	let lastNextId: number | undefined;
 	let agentRunning = false;
 
-	function setState(next: FridayTodoState) {
+	function setState(next: SidechatTodoState) {
 		state = {
 			tasks: next.tasks.map((task) => ({ ...task, blockedBy: task.blockedBy ? [...task.blockedBy] : undefined })),
 			nextId: next.nextId,
@@ -162,26 +162,26 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 		lastNextId = undefined;
 	}
 
-	function snapshot(): FridayTodoState {
+	function snapshot(): SidechatTodoState {
 		return {
 			tasks: state.tasks.map((task) => ({ ...task, blockedBy: task.blockedBy ? [...task.blockedBy] : undefined })),
 			nextId: state.nextId,
 		};
 	}
 
-	function nonDeletedTasks(): FridayTask[] {
+	function nonDeletedTasks(): SidechatTask[] {
 		return state.tasks.filter((task) => task.status !== "deleted");
 	}
 
-	function visibleTasks(): FridayTask[] {
+	function visibleTasks(): SidechatTask[] {
 		return nonDeletedTasks();
 	}
 
-	function openTasks(): FridayTask[] {
+	function openTasks(): SidechatTask[] {
 		return nonDeletedTasks().filter((task) => task.status === "pending" || task.status === "in_progress");
 	}
 
-	function activeTasks(): FridayTask[] {
+	function activeTasks(): SidechatTask[] {
 		return nonDeletedTasks().filter((task) => task.status === "in_progress");
 	}
 
@@ -189,20 +189,20 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 		return tasks.some((task) => task.status === "pending" || task.status === "in_progress");
 	}
 
-	function counts(tasks: FridayTask[]) {
+	function counts(tasks: SidechatTask[]) {
 		return {
 			total: tasks.length,
 			completed: tasks.filter((task) => task.status === "completed").length,
 		};
 	}
 
-	function dependenciesSatisfied(task: FridayTask): boolean {
+	function dependenciesSatisfied(task: SidechatTask): boolean {
 		const deps = task.blockedBy ?? [];
 		if (deps.length === 0) return true;
 		return deps.every((id) => state.tasks.some((candidate) => candidate.id === id && candidate.status === "completed"));
 	}
 
-	function nextRunnablePendingTask(): FridayTask | undefined {
+	function nextRunnablePendingTask(): SidechatTask | undefined {
 		return nonDeletedTasks().find((task) => task.status === "pending" && dependenciesSatisfied(task))
 			?? nonDeletedTasks().find((task) => task.status === "pending");
 	}
@@ -256,22 +256,22 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 		if (tasks.length === 0) return [];
 		const taskCounts = counts(tasks);
 		const hasActive = tasks.some((task) => task.status === "in_progress");
-		const lines = [`${hasActive ? FRIDAY_ACCENT : FRIDAY_DIM}Todo list - ${taskCounts.completed}/${taskCounts.total}${FRIDAY_RESET}`];
+		const lines = [`${hasActive ? SIDECHAT_ACCENT : SIDECHAT_DIM}Todo list - ${taskCounts.completed}/${taskCounts.total}${SIDECHAT_RESET}`];
 		const visible = tasks.slice(0, MAX_TODO_LINES - 1);
 		for (let i = 0; i < visible.length; i++) {
 			const task = visible[i]!;
 			const isLast = i === visible.length - 1 && visible.length === tasks.length;
 			const prefix = isLast ? "`-" : "|-";
-			const status = `${statusColor(task)}${statusGlyph(task)}${FRIDAY_RESET}`;
-			const subjectColor = task.status === "completed" ? FRIDAY_DIM : FRIDAY_TEXT;
-			let line = `${FRIDAY_MUTED}${prefix}${FRIDAY_RESET} ${status} ${subjectColor}${asciiOnly(task.subject)}${FRIDAY_RESET}`;
+			const status = `${statusColor(task)}${statusGlyph(task)}${SIDECHAT_RESET}`;
+			const subjectColor = task.status === "completed" ? SIDECHAT_DIM : SIDECHAT_TEXT;
+			let line = `${SIDECHAT_MUTED}${prefix}${SIDECHAT_RESET} ${status} ${subjectColor}${asciiOnly(task.subject)}${SIDECHAT_RESET}`;
 			if (task.blockedBy && task.blockedBy.length > 0) {
-				line += ` ${FRIDAY_DIM}deps ${task.blockedBy.map((id) => `#${id}`).join(",")}${FRIDAY_RESET}`;
+				line += ` ${SIDECHAT_DIM}deps ${task.blockedBy.map((id) => `#${id}`).join(",")}${SIDECHAT_RESET}`;
 			}
 			lines.push(truncateAnsi(line, MAX_LINE_WIDTH));
 		}
 		if (tasks.length > visible.length) {
-			lines.push(`${FRIDAY_MUTED}` + "`-" + ` +${tasks.length - visible.length} more${FRIDAY_RESET}`);
+			lines.push(`${SIDECHAT_MUTED}` + "`-" + ` +${tasks.length - visible.length} more${SIDECHAT_RESET}`);
 		}
 		return lines;
 	}
@@ -305,12 +305,12 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 	function replayFromBranch(ctx: any) {
 		try {
 			const branch = ctx.sessionManager?.getBranch?.() ?? [];
-			let restored: FridayTodoState = { tasks: [], nextId: 1 };
+			let restored: SidechatTodoState = { tasks: [], nextId: 1 };
 			for (const entry of branch) {
 				const message = entry?.message;
 				if (entry?.type !== "message" || message?.role !== "toolResult" || message?.toolName !== "todo") continue;
 				const details = message.details;
-				const candidate = details?.fridayTodoState ?? (Array.isArray(details?.tasks) ? { tasks: details.tasks, nextId: undefined } : undefined);
+				const candidate = details?.sidechatTodoState ?? (Array.isArray(details?.tasks) ? { tasks: details.tasks, nextId: undefined } : undefined);
 				if (!candidate || !Array.isArray(candidate.tasks)) continue;
 				const tasks = candidate.tasks
 					.filter((task: any) => typeof task?.id === "number" && typeof task?.subject === "string")
@@ -322,7 +322,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 						activeForm: typeof task.activeForm === "string" ? task.activeForm : undefined,
 						blockedBy: normalizeBlockedBy(task.blockedBy),
 					}));
-				const maxId = tasks.reduce((max: number, task: FridayTask) => Math.max(max, task.id), 0);
+				const maxId = tasks.reduce((max: number, task: SidechatTask) => Math.max(max, task.id), 0);
 				restored = { tasks, nextId: typeof candidate.nextId === "number" ? candidate.nextId : maxId + 1 };
 			}
 			setState(restored);
@@ -335,7 +335,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 		}
 	}
 
-	function findTask(id: number): FridayTask | undefined {
+	function findTask(id: number): SidechatTask | undefined {
 		return state.tasks.find((task) => task.id === id && task.status !== "deleted");
 	}
 
@@ -343,7 +343,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 		clearCompletedPlanIfDone(true);
 	}
 
-	function buildTask(params: TodoCreateManyItem): FridayTask {
+	function buildTask(params: TodoCreateManyItem): SidechatTask {
 		if (!params.subject || typeof params.subject !== "string") throw new Error("todo task requires subject");
 		const status = normalizeStatus(params.status) ?? "pending";
 		if (status === "deleted") throw new Error("todo.create_many cannot create deleted tasks");
@@ -367,7 +367,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 			.map((task) => `#${task.id} ${task.subject} [${task.status}]`)
 			.join("; ");
 		return [
-			`Friday todo state: ${taskCounts.completed}/${taskCounts.total} complete.`,
+			`Sidechat todo state: ${taskCounts.completed}/${taskCounts.total} complete.`,
 			active ? `Current task: #${active.id} ${active.subject}.` : "No active task is set; set exactly one task in_progress before doing more work.",
 			remaining ? `Remaining: ${remaining}.` : "No remaining open tasks.",
 			"Follow the todo list as the execution plan. Do not start unrelated work; complete or update the active task before moving on.",
@@ -377,8 +377,8 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 	pi.registerTool({
 		name: "todo",
 		label: "Todo",
-		description: "Manage Friday's built-in todo list shown in the Friday tmux todo pane.",
-		promptSnippet: "Manage Friday's built-in todo list shown in the Friday tmux todo pane",
+		description: "Manage Sidechat's built-in todo list shown in the Sidechat tmux todo pane.",
+		promptSnippet: "Manage Sidechat's built-in todo list shown in the Sidechat tmux todo pane",
 		promptGuidelines: [
 			"Use todo for substantial multi-step execution, when the user gives numbered directions, or when the user gives several requirements that must be tracked. Skip it for simple questions, single-command checks, read-only investigation, or reporting.",
 			"Start a real plan with one todo create_many call containing 3-8 concrete tasks and exactly one in_progress task. Turn the user's directions into tracked tasks; do not keep requirements only in prose.",
@@ -407,10 +407,10 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 			replace: Type.Optional(Type.Boolean({ description: "Explicitly replace an open todo list. Use only when the user changed the plan." })),
 		}),
 		async execute(_toolCallId, params: any) {
-			if (!isEnabled()) throw new Error("Friday todo is disabled while Friday is inactive");
+			if (!isEnabled()) throw new Error("Sidechat todo is disabled while Sidechat is inactive");
 			const action = String(params.action ?? "").trim() as TodoAction;
-			let affected: FridayTask | undefined;
-			let affectedMany: FridayTask[] = [];
+			let affected: SidechatTask | undefined;
+			let affectedMany: SidechatTask[] = [];
 
 			if (action === "create") {
 				clearCompletedBatchIfDone();
@@ -514,7 +514,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 					: summarize(action, affected);
 			return {
 				content: [{ type: "text" as const, text: renderStateSummary(action, summary) }],
-				details: { action, params, tasks: snap.tasks, fridayTodoState: snap },
+				details: { action, params, tasks: snap.tasks, sidechatTodoState: snap },
 			};
 		},
 		renderCall(args, theme) {
@@ -532,10 +532,10 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 	});
 
 	pi.registerCommand("todos", {
-		description: "Show Friday's built-in todo list",
+		description: "Show Sidechat's built-in todo list",
 		handler: async (_args, ctx) => {
 			if (!isEnabled()) {
-				ctx.ui.notify("Friday todo is disabled while Friday is inactive", "info");
+				ctx.ui.notify("Sidechat todo is disabled while Sidechat is inactive", "info");
 				return;
 			}
 			writeTodosFile();
@@ -555,7 +555,7 @@ export function registerFridayTodo(pi: ExtensionAPI, options: RegisterFridayTodo
 		if (!reminder) return;
 		return {
 			message: {
-				customType: "friday-todo-state",
+				customType: "sidechat-todo-state",
 				content: reminder,
 				display: false,
 			},

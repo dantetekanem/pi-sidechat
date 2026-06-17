@@ -1,16 +1,5 @@
 {
-  "name": "Friday",
-  "voice": {
-    "enabled": false,
-    "model": "en_GB-jenny_dioco-medium",
-    "speed": 0.9
-  },
-  "wakeWord": {
-    "enabled": false,
-    "model": "hey_friday",
-    "threshold": 0.3,
-    "whisperModel": "tiny.en"
-  },
+  "name": "Sidechat",
   "typewriter": {
     "enabled": true
   },
