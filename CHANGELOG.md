@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Optional Friday-style ack messages via the `acks.enabled` and `acks.delayMs` settings.
+
+### Fixed
+
+- Preserve non-streamed assistant messages while Sidechat suppresses visible streaming, preventing spawned-agent replies from disappearing.
+- Keep panel-only routed messages in the main transcript when routing would otherwise leave a blank assistant response.
+
 ## 1.0.0 - 2026-06-16
 
 ### Added

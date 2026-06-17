@@ -3,5 +3,9 @@
   "typewriter": {
     "enabled": true
   },
+  "acks": {
+    "enabled": false,
+    "delayMs": 2000
+  },
   "panelWidth": 25
 }

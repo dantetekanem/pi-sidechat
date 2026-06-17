@@ -11,6 +11,10 @@ export interface SidechatSettings {
 	typewriter: {
 		enabled: boolean;
 	};
+	acks: {
+		enabled: boolean;
+		delayMs: number;
+	};
 	panelWidth: number;
 }
 
@@ -18,6 +22,10 @@ export const DEFAULT_SETTINGS: SidechatSettings = {
 	name: "Sidechat",
 	typewriter: {
 		enabled: true,
+	},
+	acks: {
+		enabled: false,
+		delayMs: 2000,
 	},
 	panelWidth: 25,
 };
@@ -39,6 +47,12 @@ export function loadSettings(): SidechatSettings {
 				name: typeof raw.name === "string" ? raw.name : DEFAULT_SETTINGS.name,
 				panelWidth: typeof raw.panelWidth === "number" ? raw.panelWidth : DEFAULT_SETTINGS.panelWidth,
 				typewriter: { ...DEFAULT_SETTINGS.typewriter, ...(raw.typewriter ?? {}) },
+				acks: {
+					...DEFAULT_SETTINGS.acks,
+					...(raw.acks ?? {}),
+					enabled: typeof raw.acks?.enabled === "boolean" ? raw.acks.enabled : DEFAULT_SETTINGS.acks.enabled,
+					delayMs: typeof raw.acks?.delayMs === "number" ? raw.acks.delayMs : DEFAULT_SETTINGS.acks.delayMs,
+				},
 			};
 		}
 	} catch { /* use defaults */ }

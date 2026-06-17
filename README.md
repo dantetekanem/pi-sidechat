@@ -67,9 +67,15 @@ The built-in `todo` tool renders a visible execution plan in the side panel.
   "typewriter": {
     "enabled": true
   },
+  "acks": {
+    "enabled": false,
+    "delayMs": 2000
+  },
   "panelWidth": 25
 }
 ```
+
+Set `acks.enabled` to `true` to show short Friday-style acknowledgments in the side panel while the agent starts working.
 
 ## License
 

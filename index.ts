@@ -17,6 +17,7 @@ import {
 	openPanel, killPane, isPaneAlive, ensurePanelOpen, cleanupFiles,
 	syncTodoPane, writeMessage, writeMessagePassthrough
 } from "./panel.js";
+import { scheduleAck, cancelAck, type AckCategory } from "./acks.js";
 import { registerSidechatTodo } from "./todo.js";
 
 export function shouldStartSidechatForPiInvocation(args = process.argv.slice(2), stdinIsTTY = process.stdin.isTTY): boolean {
@@ -158,6 +159,11 @@ export default function (pi: ExtensionAPI) {
 	let paneHidden = false;
 	let paneWidth = 40;
 	let lastMessageTime = { value: 0 };
+	let lastAgentEndTime = { value: 0 };
+	let interactionCount = { value: 0 };
+	let lastAckCategory = { value: null as AckCategory | null };
+	let lastAckIndex = { value: -1 };
+	let ackTimer = { value: null as ReturnType<typeof setTimeout> | null };
 	let hiddenStreamCopyActive = false;
 	let hiddenStreamCopiedText = "";
 	let visibleRouteTextByIndex = new Map<number, string>();
@@ -296,6 +302,16 @@ export default function (pi: ExtensionAPI) {
 
 	function writeMessagePassthroughWrapper(text: string) {
 		writeMessagePassthrough(text, messagesFile, paneWidth, logError);
+	}
+
+	function deliverAck(text: string): void {
+		try {
+			if (!isSidechatActive() || !isSidechatVisible()) return;
+			void ensurePanelOpenWrapper().then((ok) => {
+				try { if (ok) writeMessageWrapper(text, true); }
+				catch (e) { logError("sidechat.deliverAck.write", e); }
+			}).catch((e) => logError("sidechat.deliverAck.ensurePanel", e));
+		} catch (e) { logError("sidechat.deliverAck", e); }
 	}
 
 	function syncTodoPaneWrapper(hasTodos: boolean) {
@@ -623,6 +639,10 @@ export default function (pi: ExtensionAPI) {
 		}
 		void setSidechatEnabled(nextEnabled, sidechatEventSource(data));
 	});
+	pi.on("agent_end", async () => {
+		try { lastAgentEndTime.value = Date.now(); }
+		catch (e) { logError("sidechat.agentEnd", e); }
+	});
 
 	// Custom Tool: sidechat_control
 	pi.registerTool({
@@ -689,6 +709,12 @@ Use <msg> for short acknowledgments, summaries, commentary, or framing that belo
 				if (paneHidden) deactivateSidechatTools("beforeAgentStartHidden", true);
 				return;
 			}
+			const prompt = typeof (event as any).prompt === "string" ? (event as any).prompt : "";
+			scheduleAck(
+				prompt, settings, ackTimer, lastAgentEndTime,
+				interactionCount, lastAckCategory, lastAckIndex,
+				deliverAck, logError,
+			);
 			return { systemPrompt: event.systemPrompt + buildSidechatProtocolPrompt() };
 		} catch (e) { logError("before_agent_start", e); }
 	});
@@ -701,6 +727,14 @@ Use <msg> for short acknowledgments, summaries, commentary, or framing that belo
 			}
 		}
 		return textParts.join("\n\n");
+	}
+
+	function hasRenderableMainContent(message: any): boolean {
+		for (const block of message?.content ?? []) {
+			if (block.type === "text" && block.text?.trim()) return true;
+			if (block.type !== "text" && block.type !== "thinking") return true;
+		}
+		return false;
 	}
 
 	function rememberSidebarAssistantMessage(message: any): void {
@@ -800,7 +834,10 @@ Use <msg> for short acknowledgments, summaries, commentary, or framing that belo
 
 	function suppressAssistantTextInPlace(message: any): void {
 		try {
-			for (const block of message?.content ?? []) {
+			message.content = (message?.content ?? []).map((block: any) =>
+				block && typeof block === "object" ? { ...block } : block,
+			);
+			for (const block of message.content) {
 				if (block.type === "text") block.text = "";
 				else if (block.type === "thinking") block.thinking = "";
 			}
@@ -835,20 +872,37 @@ Use <msg> for short acknowledgments, summaries, commentary, or framing that belo
 		visibleRouteThinkingByIndex = new Map<number, string>();
 	}
 
-	function captureVisibleRouteDelta(assistantEvent: any): void {
+	function captureVisibleRouteSnapshot(message: any): void {
+		try {
+			(message?.content ?? []).forEach((block: any, index: number) => {
+				if (block.type === "text" && typeof block.text === "string" && block.text.length > 0) {
+					visibleRouteTextByIndex.set(index, block.text);
+				} else if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking.length > 0) {
+					visibleRouteThinkingByIndex.set(index, block.thinking);
+				}
+			});
+		} catch (e) { logError("sidechat.captureVisibleRouteSnapshot", e); }
+	}
+
+	function captureVisibleRouteDelta(assistantEvent: any): boolean {
 		try {
 			const index = Number(assistantEvent?.contentIndex ?? 0);
-			if (!Number.isInteger(index) || index < 0) return;
+			if (!Number.isInteger(index) || index < 0) return false;
 			if (assistantEvent.type === "text_delta" && typeof assistantEvent.delta === "string") {
 				visibleRouteTextByIndex.set(index, (visibleRouteTextByIndex.get(index) ?? "") + assistantEvent.delta);
+				return true;
 			} else if (assistantEvent.type === "text_end" && typeof assistantEvent.content === "string") {
 				visibleRouteTextByIndex.set(index, assistantEvent.content);
+				return true;
 			} else if (assistantEvent.type === "thinking_delta" && typeof assistantEvent.delta === "string") {
 				visibleRouteThinkingByIndex.set(index, (visibleRouteThinkingByIndex.get(index) ?? "") + assistantEvent.delta);
+				return true;
 			} else if (assistantEvent.type === "thinking_end" && typeof assistantEvent.content === "string") {
 				visibleRouteThinkingByIndex.set(index, assistantEvent.content);
+				return true;
 			}
 		} catch (e) { logError("sidechat.captureVisibleRouteDelta", e); }
+		return false;
 	}
 
 	function sidebarAssistantRestorations(ctx: any): Map<number, any> {
@@ -886,8 +940,10 @@ Use <msg> for short acknowledgments, summaries, commentary, or framing that belo
 			const msg = event.message;
 			if (!msg || msg.role !== "assistant") return;
 			resetVisibleRouteBuffers();
-			if (isSidechatActive() && !paneHidden) suppressAssistantTextInPlace(msg);
-			else replaceAssistantContentInPlace(msg, stripSidechatTagsFromMessage(msg, true));
+			if (isSidechatActive() && !paneHidden) {
+				captureVisibleRouteSnapshot(msg);
+				suppressAssistantTextInPlace(msg);
+			} else replaceAssistantContentInPlace(msg, stripSidechatTagsFromMessage(msg, true));
 		} catch (e) { logError("message_start.route", e); }
 	});
 
@@ -896,8 +952,9 @@ Use <msg> for short acknowledgments, summaries, commentary, or framing that belo
 			const msg = event.message;
 			if (!msg || msg.role !== "assistant") return;
 			const assistantEvent = (event as any).assistantMessageEvent;
-			captureVisibleRouteDelta(assistantEvent);
+			const capturedDelta = captureVisibleRouteDelta(assistantEvent);
 			if (isSidechatActive() && !paneHidden) {
+				if (!capturedDelta) captureVisibleRouteSnapshot(msg);
 				suppressAssistantTextInPlace(msg);
 				return;
 			}
@@ -915,6 +972,7 @@ Use <msg> for short acknowledgments, summaries, commentary, or framing that belo
 			if (!isSidechatActive() || paneHidden) {
 				const cleanedMessage = stripSidechatTagsFromMessage(restoreVisibleRoutedAssistantMessage(msg));
 				const text = extractAssistantText(cleanedMessage);
+				if (text) cancelAck(ackTimer);
 				if (isSidechatActive() && paneHidden && text) await writeHiddenPanelCopy(text);
 				resetVisibleRouteBuffers();
 				return { message: cleanedMessage };
@@ -922,13 +980,19 @@ Use <msg> for short acknowledgments, summaries, commentary, or framing that belo
 
 			const restoredMessage = restoreVisibleRoutedAssistantMessage(msg);
 			const routed = routeAssistantMessageForSidechat(restoredMessage);
+			const mainText = extractAssistantText(routed.mainMessage);
+			if (routed.sidebarText || mainText) cancelAck(ackTimer);
 			resetVisibleRouteBuffers();
 			if (routed.sidebarText) {
 				const ok = await ensurePanelOpenWrapper();
 				if (ok) writeMessageWrapper(routed.sidebarText);
+				else return { message: stripSidechatTagsFromMessage(restoredMessage) };
 			}
 
 			rememberSidebarAssistantMessage(restoredMessage);
+			if (routed.sidebarText && !hasRenderableMainContent(routed.mainMessage)) {
+				return { message: stripSidechatTagsFromMessage(restoredMessage) };
+			}
 			return { message: routed.mainMessage };
 		} catch (e) { logError("message_end.sidebarRoute", e); }
 	});
@@ -951,6 +1015,7 @@ Use <msg> for short acknowledgments, summaries, commentary, or framing that belo
 						`Name: ${settings.name}`,
 						`Panel width: ${settings.panelWidth}%`,
 						`Typewriter: ${settings.typewriter.enabled ? "on" : "off"}`,
+						`Ack messages: ${settings.acks.enabled ? `on (${settings.acks.delayMs}ms)` : "off"}`,
 						`Settings file: ${getSettingsPath()}`,
 					].join("\n");
 					ctx.ui.notify(info, "info");

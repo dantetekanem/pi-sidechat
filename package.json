@@ -14,6 +14,7 @@
     "index.ts",
     "panel.ts",
     "todo.ts",
+    "acks.ts",
     "settings.ts",
     "settings.json",
     "README.md",
