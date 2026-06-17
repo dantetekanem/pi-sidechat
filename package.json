@@ -1,6 +1,6 @@
 {
   "name": "pi-sidechat",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Side panel for pi that routes <msg> assistant messages to a tmux side pane while leaving everything else in the main transcript.",
   "keywords": [
     "pi-package"
