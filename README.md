@@ -5,15 +5,13 @@ Pi extension that renders `<msg>...</msg>` assistant messages in a tmux side pan
 ## Install
 
 ```bash
-pi install npm:pi-sidechat
-```
-
-```bash
 pi install git:github.com/dantetekanem/pi-sidechat
 ```
 
+To run from a local checkout:
+
 ```bash
-pi -e npm:pi-sidechat
+pi -e .
 ```
 
 ## Requirements
